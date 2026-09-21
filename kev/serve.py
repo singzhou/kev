@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from .api import SystemOneRequest, to_record, to_answers, output_tokens, with_date_facts
 from .data import DISTRACTORS, NONE
+from .device import resolve_device, synchronize
 from .evaluate import load
 from .model import encode
 
@@ -46,8 +47,7 @@ def _rec(r: Record):
 
 
 def _sync(dev):
-    if dev == "mps": torch.mps.synchronize()
-    elif dev == "cuda": torch.cuda.synchronize()
+    synchronize(dev)
 
 
 def _probs(rec):
@@ -182,6 +182,7 @@ def main():
     ap.add_argument("--run", "--kev-model", dest="run", default="runs/kev", help="Kev adapter/checkpoint directory or Hub repo id")
     ap.add_argument("--base", "--base-model", dest="base", help="override the Qwen base model with a local directory or Hub repo id")
     ap.add_argument("--base-revision", help="optional Hub revision for --base; ignored when --base is a local directory")
+    ap.add_argument("--device", choices=["auto", "cpu", "mps", "cuda", "npu"], default="auto")
     ap.add_argument("--fallback", default="runs/smoke")
     ap.add_argument("--port", type=int, default=8008)
     a = ap.parse_args()
@@ -191,9 +192,14 @@ def main():
     if run != a.run: print(f"{a.run} not found, falling back to {run}")
     label = run                       # what /v1/models reports: the Hub id or run path as given, not the resolved cache path
     run = resolve_run(run)
-    dev = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    dev = resolve_device(a.device)
+    global PREFIX_CACHE_SIZE
+    if dev == "npu" and "KEV_PREFIX_CACHE" not in os.environ:
+        # DynamicCache deepcopy/reorder on TorchNPU has not been validated yet. Opt in after full-vs-prefix parity passes.
+        PREFIX_CACHE_SIZE = 0
     meta = torch.load(f"{run}/head.pt", map_location="cpu")
     if dev == "mps" and not os.environ.get("KEV_ATTN"): os.environ["KEV_ATTN"] = "sdpa"   # serving default on Apple GPUs (parity measured)
+    if dev == "npu" and not os.environ.get("KEV_ATTN"): os.environ["KEV_ATTN"] = "eager"  # CUDA-only attention kernels are not usable on NPU
     base, base_revision = resolve_base(meta, a.base, a.base_revision)
     tok, model = load(run, dev, base=a.base, base_revision=a.base_revision)
     STATE.update(run=label, tok=tok, model=model, dev=dev, base=base, lora=meta["lora"])

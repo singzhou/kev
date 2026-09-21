@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from kev.data import materialize
+from kev.device import default_device as _default_device, resolve_device, synchronize
 from kev.evaluate import ece, load, resolve_run
 from kev.model import encode
 from kev.suite import digest, load_split, record_digest, write_json
@@ -17,7 +18,8 @@ EPSILON = 1e-9
 
 
 def default_device():
-    return "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    """Backward-compatible export used by kev.experiment."""
+    return _default_device()
 
 
 def api_request(record):
@@ -201,8 +203,7 @@ def summarize(rows, temperature=1.0, heldout_sources=("mnli", "sst5")):
 
 
 def sync(device):
-    if device == "mps": torch.mps.synchronize()
-    elif device == "cuda": torch.cuda.synchronize()
+    synchronize(device)
 
 
 class LocalPredictor:
@@ -311,10 +312,11 @@ def main():
     ap.add_argument("--suite", help="frozen suite directory (scores its development partition)")
     ap.add_argument("--data", help="your own labelled requests, one JSON object per line (kev.data.load_records); an alternative to --suite")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--device", choices=["cpu", "mps", "cuda"], default=default_device())
+    ap.add_argument("--device", choices=["auto", "cpu", "mps", "cuda", "npu"], default="auto")
     ap.add_argument("--allow-test", action="store_true")
     ap.add_argument("--date_facts", action="store_true", help="apply kev.api.with_date_facts to every state before scoring (the opt-in serving preprocessor); reported in report.json")
     a = ap.parse_args()
+    a.device = resolve_device(a.device)
     if bool(a.run) == bool(a.remote): ap.error("give exactly one of --run or --remote")
     if bool(a.suite) == bool(a.data): ap.error("give exactly one of --suite or --data")
     if a.data:

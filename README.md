@@ -42,6 +42,17 @@ KEV_DTYPE=bf16 python -m kev.serve --kev-model /models/kev-0.8b --base-model /mo
 
 `--run` is an alias for `--kev-model`, and `--base` is an alias for `--base-model`. A local base directory does not use the Hub revision recorded in the Kev checkpoint.
 
+Ascend NPU inference is experimental and uses TorchNPU with Transformers' eager PyTorch fallback for Qwen3.5. Install a
+`torch_npu` build matching PyTorch and CANN, then start with the unvalidated prefix cache disabled (the server does this
+automatically on NPU unless `KEV_PREFIX_CACHE` is explicitly set):
+
+```bash
+KEV_DTYPE=bf16 python -m kev.serve --device npu --kev-model /models/kev-0.8b --base-model /models/Qwen3.5-0.8B-Base --port 8009
+```
+
+The first run should be checked against CPU probabilities. Qwen3.5's fallback includes grouped convolution and FP32
+triangular solves; operator coverage and performance depend on the Ascend model, CANN, PyTorch, and TorchNPU versions.
+
 In another terminal, send it a ticket:
 
 ```bash

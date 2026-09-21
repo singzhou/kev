@@ -132,6 +132,15 @@ def test_base_override_resolution(tmp_path):
     assert resolve_base(meta, str(local), "ignored") == (str(local), None)
 
 
+def test_device_helpers_do_not_require_accelerator():
+    from kev.device import device_type, resolve_device, synchronize
+
+    assert device_type("npu:0") == "npu"
+    assert device_type(torch.device("cpu")) == "cpu"
+    assert resolve_device("cpu") == "cpu"
+    assert synchronize("cpu") is None
+
+
 def test_soft_targets_and_date_facts():
     """Night-2 additions: a question with a soft target materializes to a normalized vector aligned with its keys, survives
     option permutation, and trains with cross-entropy against the target; date_facts writes one sentence per date pair."""
