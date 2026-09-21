@@ -37,10 +37,12 @@ This starts Kev-4B locally. The first run downloads the adapter and base model. 
 If the Kev checkpoint and its Qwen base are in separate local directories, pass both explicitly:
 
 ```bash
-KEV_DTYPE=bf16 python -m kev.serve --kev-model /models/kev-0.8b --base-model /models/Qwen3.5-0.8B-Base --port 8009
+KEV_DTYPE=bf16 python -m kev.serve --kev-model /models/kev-0.8b --base-model /models/Qwen3.5-0.8B-Base --max-context 16384 --port 8009
 ```
 
 `--run` is an alias for `--kev-model`, and `--base` is an alias for `--base-model`. A local base directory does not use the Hub revision recorded in the Kev checkpoint.
+`--max-context` limits each Transformer input row (the state plus one question branch) and defaults to 16,384 tokens.
+The base model's own context window and available device memory can impose a lower practical limit.
 
 Ascend NPU inference is experimental and uses TorchNPU with Transformers' eager PyTorch fallback for Qwen3.5. Install a
 `torch_npu` build matching PyTorch and CANN, then start with the unvalidated prefix cache disabled (the server does this
@@ -359,7 +361,7 @@ These commands use development data. Test data requires `--allow-test`. The benc
 - Fine-tuning can make the base model worse at individual tasks. Date arithmetic is the clearest case: the untrained Qwen3.5-9B base gets 0.82 on the `deadline` policy questions and Kev-9B gets 0.72, because training erodes the skill ([issue #8](https://github.com/jaredpalmer/kev/issues/8), [PLAN_Qwen35.md](PLAN_Qwen35.md)). Knowledge questions (MMLU 0.74 vs Jev 0.90) are the other large gap.
 - The current models are slow on Apple Silicon (see Serving Performance) and need `transformers >= 5.17`.
 - Changing option order can change an answer. Question isolation doesn't prevent this.
-- Training uses at most 384 state tokens and 1,024 tokens for the state plus one question. Serving allows 8,192 tokens for the state plus one question; longer context wasn't covered by training.
+- Training uses at most 384 state tokens and 1,024 tokens for the state plus one question. Serving defaults to 16,384 tokens for the state plus one question and can be changed with `--max-context`; longer context wasn't covered by training.
 - The server handles one request at a time. It caches repeated state text, but doesn't batch requests from different callers.
 
 ## Development

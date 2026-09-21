@@ -13,14 +13,15 @@ from .device import resolve_device, synchronize
 from .evaluate import load
 from .model import encode
 
-# inference limits (training used 384/640); per-branch cap mirrors Jev's ~32k, bounded by the base model window
-INFER_MAX_STATE, INFER_MAX_BRANCH = 8192, 8192
+# Training used a much smaller context. Serving may use a larger window, bounded by the base model and device memory.
+DEFAULT_MAX_CONTEXT = 16384
 
 app = FastAPI(title="kev")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 LOG = logging.getLogger("uvicorn.error")
 REQUEST_IDS = itertools.count(1)
-STATE = {"run": None, "tok": None, "model": None, "dev": None, "lock": threading.Lock(), "prefix_cache": {}, "prefix_hits": 0, "prefix_misses": 0}
+STATE = {"run": None, "tok": None, "model": None, "dev": None, "max_context": DEFAULT_MAX_CONTEXT,
+         "lock": threading.Lock(), "prefix_cache": {}, "prefix_hits": 0, "prefix_misses": 0}
 PREFIX_CACHE_SIZE = int(os.environ.get("KEV_PREFIX_CACHE", "4"))          # states kept (KV + hidden); 0 disables
 PREFIX_MIN_TOKENS = int(os.environ.get("KEV_PREFIX_MIN_TOKENS", "384"))
 TEMPERATURE = float(os.environ.get("KEV_TEMPERATURE", "1.0"))               # opt-in: probabilities ^ (1/T), renormalised; 2.0 is the value fitted in-distribution for the Qwen3.5 family (scripts/temperature_groups.py)
@@ -59,7 +60,7 @@ def _probs(rec):
     tok, model, dev = STATE["tok"], STATE["model"], STATE["dev"]
     LOG.info("inference[%d] received: device=%s questions=%d", request_id, dev, len(rec["questions"]))
     try:
-        enc = model.encode(tok, rec, max_state=INFER_MAX_STATE, max_branch=INFER_MAX_BRANCH)
+        enc = model.encode(tok, rec, max_state=STATE["max_context"], max_branch=STATE["max_context"])
     except ValueError as e:
         LOG.warning("inference[%d] rejected during encoding: %s", request_id, e)
         raise HTTPException(422, str(e))
@@ -153,7 +154,8 @@ def models():
 @app.get("/healthz")
 def healthz():
     """Cheap readiness check that does not run model inference."""
-    return {"status": "ok", "ready": STATE["model"] is not None, "device": STATE["dev"], "run": STATE["run"]}
+    return {"status": "ok", "ready": STATE["model"] is not None, "device": STATE["dev"], "run": STATE["run"],
+            "max_context": STATE["max_context"]}
 
 
 @app.get("/api/info")
@@ -161,6 +163,7 @@ def info():
     ev = f"{STATE['run']}/eval.json"
     return {"run": STATE["run"], "device": STATE["dev"], "base": STATE["base"], "lora": STATE["lora"],
             "none_option": NONE, "distractors": DISTRACTORS, "has_eval": os.path.exists(ev),
+            "max_context": STATE["max_context"],
             "prefix_cache": {"size": PREFIX_CACHE_SIZE, "min_state_tokens": PREFIX_MIN_TOKENS, "hits": STATE["prefix_hits"], "misses": STATE["prefix_misses"], "cached_states": len(STATE["prefix_cache"])}}
 
 
@@ -214,7 +217,11 @@ def main():
     ap.add_argument("--host", default=os.environ.get("KEV_HOST", "127.0.0.1"), help="listen address; use 0.0.0.0 to expose a container port")
     ap.add_argument("--fallback", default="runs/smoke")
     ap.add_argument("--port", type=int, default=8008)
+    ap.add_argument("--max-context", type=int, default=DEFAULT_MAX_CONTEXT,
+                    help="maximum tokens for the state plus one question branch (default: 16384)")
     a = ap.parse_args()
+    if a.max_context < 2:
+        ap.error("--max-context must be at least 2")
     from .evaluate import resolve_base, resolve_run
     is_hub_id = re.fullmatch(r"[\w.-]+/[\w.-]+", a.run) and not os.path.isdir(a.run)
     run = a.run if is_hub_id or os.path.exists(f"{a.run}/head.pt") else a.fallback
@@ -231,9 +238,10 @@ def main():
     if dev == "npu" and not os.environ.get("KEV_ATTN"): os.environ["KEV_ATTN"] = "eager"  # CUDA-only attention kernels are not usable on NPU
     base, base_revision = resolve_base(meta, a.base, a.base_revision)
     tok, model = load(run, dev, base=a.base, base_revision=a.base_revision)
-    STATE.update(run=label, tok=tok, model=model, dev=dev, base=base, lora=meta["lora"])
+    STATE.update(run=label, tok=tok, model=model, dev=dev, base=base, lora=meta["lora"], max_context=a.max_context)
     revision_label = f"@{base_revision}" if base_revision else ""
-    print(f"serving {label} ({run}) with base {base}{revision_label} on {dev} :{a.port}")
+    print(f"serving {label} ({run}) with base {base}{revision_label} on {dev} :{a.port} "
+          f"(max context: {a.max_context} tokens)")
     if dev == "cpu" and model.hybrid:
         print("warning: Qwen3.5 is using the CPU PyTorch fallback; inference may take a while. "
               f"Check readiness with http://127.0.0.1:{a.port}/healthz.", flush=True)
