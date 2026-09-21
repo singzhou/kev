@@ -179,11 +179,13 @@ def permute(r: PermuteReq):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default="runs/kev")
+    ap.add_argument("--run", "--kev-model", dest="run", default="runs/kev", help="Kev adapter/checkpoint directory or Hub repo id")
+    ap.add_argument("--base", "--base-model", dest="base", help="override the Qwen base model with a local directory or Hub repo id")
+    ap.add_argument("--base-revision", help="optional Hub revision for --base; ignored when --base is a local directory")
     ap.add_argument("--fallback", default="runs/smoke")
     ap.add_argument("--port", type=int, default=8008)
     a = ap.parse_args()
-    from .evaluate import resolve_run
+    from .evaluate import resolve_base, resolve_run
     is_hub_id = re.fullmatch(r"[\w.-]+/[\w.-]+", a.run) and not os.path.isdir(a.run)
     run = a.run if is_hub_id or os.path.exists(f"{a.run}/head.pt") else a.fallback
     if run != a.run: print(f"{a.run} not found, falling back to {run}")
@@ -192,9 +194,11 @@ def main():
     dev = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     meta = torch.load(f"{run}/head.pt", map_location="cpu")
     if dev == "mps" and not os.environ.get("KEV_ATTN"): os.environ["KEV_ATTN"] = "sdpa"   # serving default on Apple GPUs (parity measured)
-    tok, model = load(run, dev)
-    STATE.update(run=label, tok=tok, model=model, dev=dev, base=meta["base"], lora=meta["lora"])
-    print(f"serving {label} ({run}) on {dev} :{a.port}")
+    base, base_revision = resolve_base(meta, a.base, a.base_revision)
+    tok, model = load(run, dev, base=a.base, base_revision=a.base_revision)
+    STATE.update(run=label, tok=tok, model=model, dev=dev, base=base, lora=meta["lora"])
+    revision_label = f"@{base_revision}" if base_revision else ""
+    print(f"serving {label} ({run}) with base {base}{revision_label} on {dev} :{a.port}")
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=a.port)
 

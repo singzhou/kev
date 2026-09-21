@@ -117,6 +117,21 @@ def test_load_records_jsonl(tmp_path):
     except ValueError as e: assert "no label" in str(e)
 
 
+def test_base_override_resolution(tmp_path):
+    from kev.evaluate import resolve_base
+
+    meta = {"base": "Qwen/original", "base_revision": "abc123"}
+    assert resolve_base(meta) == ("Qwen/original", "abc123")
+    assert resolve_base(meta, "Qwen/original") == ("Qwen/original", "abc123")
+    assert resolve_base(meta, "Qwen/other") == ("Qwen/other", None)
+    assert resolve_base(meta, "Qwen/other", "def456") == ("Qwen/other", "def456")
+
+    local = tmp_path / "Qwen3.5-0.8B-Base"
+    local.mkdir()
+    assert resolve_base(meta, str(local)) == (str(local), None)
+    assert resolve_base(meta, str(local), "ignored") == (str(local), None)
+
+
 def test_soft_targets_and_date_facts():
     """Night-2 additions: a question with a soft target materializes to a normalized vector aligned with its keys, survives
     option permutation, and trains with cross-entropy against the target; date_facts writes one sentence per date pair."""

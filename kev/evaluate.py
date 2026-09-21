@@ -34,7 +34,23 @@ def resolve_run(run):
     return snapshot_download(repo, revision=revision or None, allow_patterns=["*.json", "*.safetensors", "*.pt", "*.txt", "*.jinja"])
 
 
-def load(run, dev, dtype=None, merge=True, attn=None):
+def resolve_base(meta, base=None, base_revision=None):
+    """Resolve the base model recorded by a Kev checkpoint, with an optional caller override.
+
+    A local directory is already a complete, immutable selection from Transformers' point of view, so a Hub revision
+    must not be forwarded for it. For a different Hub repo, only use a revision explicitly supplied by the caller;
+    the checkpoint's revision belongs to its recorded repo and may not exist in the override repo.
+    """
+    recorded_base = meta["base"]
+    selected_base = base or recorded_base
+    if os.path.isdir(selected_base):
+        return selected_base, None
+    if base_revision is not None:
+        return selected_base, base_revision or None
+    return selected_base, meta.get("base_revision") if selected_base == recorded_base else None
+
+
+def load(run, dev, dtype=None, merge=True, attn=None, base=None, base_revision=None):
     """dtype: None = fp32 (exact; what every reported number uses). KEV_DTYPE=bf16 or dtype=torch.bfloat16 halves memory
     for serving large backbones; probabilities then differ from the fp32 numbers in the third decimal.
 
@@ -42,7 +58,8 @@ def load(run, dev, dtype=None, merge=True, attn=None):
     and in bf16 it is both faster (~15%) and closer to the fp32 numbers than running the unmerged adapter in bf16
     (kev-4b, 24 dev records: max |dp| 0.017 vs 0.029, 0 vs 1 argmax flips). KEV_MERGE=0 keeps the adapter separate.
     attn: attention backend; None = the model default (SDPA on CUDA, eager elsewhere). KEV_ATTN=sdpa enables SDPA on MPS
-    (measured parity with eager; a few percent faster)."""
+    (measured parity with eager; a few percent faster).
+    base/base_revision: optional base-model override. A local base directory always ignores the checkpoint's Hub revision."""
     import os
     run = resolve_run(run)
     meta = torch.load(f"{run}/head.pt", map_location="cpu")
@@ -56,8 +73,9 @@ def load(run, dev, dtype=None, merge=True, attn=None):
     adapter_cfg = _json.loads(open(f"{run}/adapter_config.json").read())
     merge = merge and os.environ.get("KEV_MERGE", "1") != "0" and not adapter_cfg.get("trainable_token_indices")   # token-trained adapters stay unmerged
     attn = attn or os.environ.get("KEV_ATTN") or None
-    tok = load_tokenizer(meta["base"], revision=meta.get("base_revision"))
-    m = DecisionModel(meta["base"], tok, dev, lora=None, revision=meta.get("base_revision"), head_dim=meta.get("head_dim", 256),
+    base, base_revision = resolve_base(meta, base, base_revision)
+    tok = load_tokenizer(base, revision=base_revision)
+    m = DecisionModel(base, tok, dev, lora=None, revision=base_revision, head_dim=meta.get("head_dim", 256),
                       option_isolation=meta.get("option_isolation", False), dtype=torch.float32 if merge else dtype, attn=attn)
     from peft import PeftModel
     m.lm = PeftModel.from_pretrained(m.lm, run).to(dev)   # trainable token embeddings, if any, are inside the adapter

@@ -34,6 +34,14 @@ KEV_DTYPE=bf16 uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b
 
 This starts Kev-4B locally. The first run downloads the adapter and base model. `--run` also accepts a local checkpoint directory or a Hub revision, such as `jaredpalmer/kev-4b@qwen3` for the previous generation.
 
+If the Kev checkpoint and its Qwen base are in separate local directories, pass both explicitly:
+
+```bash
+KEV_DTYPE=bf16 python -m kev.serve --kev-model /models/kev-0.8b --base-model /models/Qwen3.5-0.8B-Base --port 8009
+```
+
+`--run` is an alias for `--kev-model`, and `--base` is an alias for `--base-model`. A local base directory does not use the Hub revision recorded in the Kev checkpoint.
+
 In another terminal, send it a ticket:
 
 ```bash
