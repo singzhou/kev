@@ -64,7 +64,8 @@ curl -sS --max-time 5 http://127.0.0.1:8009/healthz
 
 Qwen3.5 uses a slow PyTorch fallback on CPU. A model request can therefore remain silent for a while when `curl -s` is
 used; prefer `curl -sS --max-time 300 ...` so connection errors are visible and inference has an explicit timeout. CPU
-bf16 performance depends on processor support; if a request appears stuck, unset `KEV_DTYPE` and retry in fp32.
+bf16 performance depends on processor support; if a request appears stuck, unset `KEV_DTYPE` and retry in fp32. The
+server logs when inference is received, encoded, started, still running after 30 seconds, completed, or failed.
 
 In another terminal, send it a ticket:
 

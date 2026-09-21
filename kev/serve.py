@@ -2,7 +2,7 @@
 
 Run: uv run --extra serve python -m kev.serve --run runs/kev --port 8008
 """
-import argparse, json, os, random, re, threading, time
+import argparse, itertools, json, logging, os, random, re, threading, time
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +18,8 @@ INFER_MAX_STATE, INFER_MAX_BRANCH = 8192, 8192
 
 app = FastAPI(title="kev")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+LOG = logging.getLogger("uvicorn.error")
+REQUEST_IDS = itertools.count(1)
 STATE = {"run": None, "tok": None, "model": None, "dev": None, "lock": threading.Lock(), "prefix_cache": {}, "prefix_hits": 0, "prefix_misses": 0}
 PREFIX_CACHE_SIZE = int(os.environ.get("KEV_PREFIX_CACHE", "4"))          # states kept (KV + hidden); 0 disables
 PREFIX_MIN_TOKENS = int(os.environ.get("KEV_PREFIX_MIN_TOKENS", "384"))
@@ -53,28 +55,48 @@ def _sync(dev):
 def _probs(rec):
     """One forward pass; the state prefix (tokens up to the first question) is cached across requests, so a repeated state
     only pays for its question branches. Exactness: the state's activations do not depend on the branches."""
+    request_id = next(REQUEST_IDS); request_start = time.perf_counter()
     tok, model, dev = STATE["tok"], STATE["model"], STATE["dev"]
-    try: enc = model.encode(tok, rec, max_state=INFER_MAX_STATE, max_branch=INFER_MAX_BRANCH)
-    except ValueError as e: raise HTTPException(422, str(e))
+    LOG.info("inference[%d] received: device=%s questions=%d", request_id, dev, len(rec["questions"]))
+    try:
+        enc = model.encode(tok, rec, max_state=INFER_MAX_STATE, max_branch=INFER_MAX_BRANCH)
+    except ValueError as e:
+        LOG.warning("inference[%d] rejected during encoding: %s", request_id, e)
+        raise HTTPException(422, str(e))
     Ls = enc["seg"].count(0); key = (tuple(enc["ids"][:Ls]), bool(enc.get("option_isolation")))
+    LOG.info("inference[%d] encoded: tokens=%d state_tokens=%d; waiting for model", request_id, len(enc["ids"]), Ls)
     cache = STATE["prefix_cache"]
-    with STATE["lock"]:
-        _sync(dev); t = time.time()
-        eligible = PREFIX_CACHE_SIZE and Ls >= PREFIX_MIN_TOKENS
-        if eligible and key in cache:
-            prefix = cache.pop(key)                       # pop + reinsert = LRU order
-            ps = model.probs_with_prefix(enc, prefix); cache[key] = prefix
-            STATE["prefix_hits"] += 1; hit = True
-        elif eligible:
-            ps, prefix = model.probs_and_prefix(enc)      # one pass, and the state prefix is kept for next time
-            cache[key] = prefix
-            while len(cache) > PREFIX_CACHE_SIZE: cache.pop(next(iter(cache)))
-            STATE["prefix_misses"] += 1; hit = False
-        else:
-            ps = model.probs(enc); hit = False
-        _sync(dev); dt = time.time() - t
+    try:
+        with STATE["lock"]:
+            _sync(dev); t = time.perf_counter()
+            LOG.info("inference[%d] forward started", request_id)
+            slow = threading.Timer(30, lambda: LOG.warning(
+                "inference[%d] is still computing after 30s on %s; Qwen3.5's CPU fallback can be very slow",
+                request_id, dev)) if dev == "cpu" and model.hybrid else None
+            if slow:
+                slow.daemon = True; slow.start()
+            try:
+                eligible = PREFIX_CACHE_SIZE and Ls >= PREFIX_MIN_TOKENS
+                if eligible and key in cache:
+                    prefix = cache.pop(key)                       # pop + reinsert = LRU order
+                    ps = model.probs_with_prefix(enc, prefix); cache[key] = prefix
+                    STATE["prefix_hits"] += 1; hit = True
+                elif eligible:
+                    ps, prefix = model.probs_and_prefix(enc)      # one pass, and the state prefix is kept for next time
+                    cache[key] = prefix
+                    while len(cache) > PREFIX_CACHE_SIZE: cache.pop(next(iter(cache)))
+                    STATE["prefix_misses"] += 1; hit = False
+                else:
+                    ps = model.probs(enc); hit = False
+                _sync(dev); dt = time.perf_counter() - t
+            finally:
+                if slow: slow.cancel()
+    except Exception:
+        LOG.exception("inference[%d] failed after %.1fs", request_id, time.perf_counter() - request_start)
+        raise
     if TEMPERATURE != 1.0:                      # opt-in calibration: same as scaling the pointer logits by 1/T (argmax unchanged)
         ps = [(lambda q: q / q.sum())(p.clamp_min(1e-9) ** (1.0 / TEMPERATURE)) for p in ps]
+    LOG.info("inference[%d] completed: model_ms=%.1f total_ms=%.1f", request_id, dt * 1000, (time.perf_counter() - request_start) * 1000)
     return [p.tolist() for p in ps], {"tokens": len(enc["ids"]), "state_tokens": Ls, "latency_ms": round(dt * 1000, 1), "prefix_cache_hit": hit}
 
 
