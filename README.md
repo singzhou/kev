@@ -53,6 +53,19 @@ KEV_DTYPE=bf16 python -m kev.serve --device npu --kev-model /models/kev-0.8b --b
 The first run should be checked against CPU probabilities. Qwen3.5's fallback includes grouped convolution and FP32
 triangular solves; operator coverage and performance depend on the Ascend model, CANN, PyTorch, and TorchNPU versions.
 
+The server listens on `127.0.0.1` by default. Inside the same container, send requests to
+`http://127.0.0.1:8009`, not `0.0.0.0` (`0.0.0.0` is a listen address, not a client destination). To publish the
+container port, start the server with `--host 0.0.0.0`, map the port with the container runtime, and still connect to
+the host's real address. Check the server without running inference:
+
+```bash
+curl -sS --max-time 5 http://127.0.0.1:8009/healthz
+```
+
+Qwen3.5 uses a slow PyTorch fallback on CPU. A model request can therefore remain silent for a while when `curl -s` is
+used; prefer `curl -sS --max-time 300 ...` so connection errors are visible and inference has an explicit timeout. CPU
+bf16 performance depends on processor support; if a request appears stuck, unset `KEV_DTYPE` and retry in fp32.
+
 In another terminal, send it a ticket:
 
 ```bash

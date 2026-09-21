@@ -16,6 +16,12 @@ def post(body):
     return r.status_code, r.json()
 
 
+def test_healthz_is_immediate_and_ready():
+    r = httpx.get(f"{BASE}/healthz", timeout=5)
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok" and r.json()["ready"] is True
+
+
 def test_choice_basic():
     code, r = post({"state": "My running shoes arrived in the wrong size. Can I swap them for a size 10?", "model": "jev-latest",
                     "questions": {"department": {"type": "choice", "instructions": "Which team should handle this?", "criteria": DEPARTMENT}}})

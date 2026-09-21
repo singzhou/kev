@@ -128,6 +128,12 @@ def models():
     return {"models": [{"id": "kev-latest", "aliases": ["jev-latest"], "run": STATE["run"], "base": STATE["base"]}]}
 
 
+@app.get("/healthz")
+def healthz():
+    """Cheap readiness check that does not run model inference."""
+    return {"status": "ok", "ready": STATE["model"] is not None, "device": STATE["dev"], "run": STATE["run"]}
+
+
 @app.get("/api/info")
 def info():
     ev = f"{STATE['run']}/eval.json"
@@ -183,6 +189,7 @@ def main():
     ap.add_argument("--base", "--base-model", dest="base", help="override the Qwen base model with a local directory or Hub repo id")
     ap.add_argument("--base-revision", help="optional Hub revision for --base; ignored when --base is a local directory")
     ap.add_argument("--device", choices=["auto", "cpu", "mps", "cuda", "npu"], default="auto")
+    ap.add_argument("--host", default=os.environ.get("KEV_HOST", "127.0.0.1"), help="listen address; use 0.0.0.0 to expose a container port")
     ap.add_argument("--fallback", default="runs/smoke")
     ap.add_argument("--port", type=int, default=8008)
     a = ap.parse_args()
@@ -205,8 +212,13 @@ def main():
     STATE.update(run=label, tok=tok, model=model, dev=dev, base=base, lora=meta["lora"])
     revision_label = f"@{base_revision}" if base_revision else ""
     print(f"serving {label} ({run}) with base {base}{revision_label} on {dev} :{a.port}")
+    if dev == "cpu" and model.hybrid:
+        print("warning: Qwen3.5 is using the CPU PyTorch fallback; inference may take a while. "
+              f"Check readiness with http://127.0.0.1:{a.port}/healthz.", flush=True)
+        if os.environ.get("KEV_DTYPE") == "bf16":
+            print("warning: CPU bf16 speed depends on hardware support; unset KEV_DTYPE and retry with fp32 if a request appears stuck.", flush=True)
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=a.port)
+    uvicorn.run(app, host=a.host, port=a.port)
 
 
 if __name__ == "__main__":
