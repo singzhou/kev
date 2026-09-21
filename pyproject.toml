@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "kev"
 version = "0.1.0"
@@ -36,6 +40,9 @@ serve = [
     "typesafe-sdk>=0.6.0",
     "uvicorn>=0.30",
 ]
+
+[tool.setuptools]
+packages = ["kev"]
 
 [dependency-groups]
 dev = [
